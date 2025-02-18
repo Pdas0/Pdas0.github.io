@@ -8,6 +8,10 @@ permalink: pretty
 cover_image: /bg.jpeg
 future: true
 
+include:
+  - images
+  - assets
+
 # Gems
 plugins:
   - jekyll-gist
