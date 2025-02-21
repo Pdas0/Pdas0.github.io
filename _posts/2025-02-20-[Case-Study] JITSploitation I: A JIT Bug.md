@@ -6,7 +6,7 @@ tags: [Pwnable, Webhacking]
 toc:  true
 ---
 
-참고 : [GoogleProjectZero-JITSploitation I: A JIT Bug](https://googleprojectzero.blogspot.com/2020/09/jitsploitation-one.html)
+원본 글 : [GoogleProjectZero-JITSploitation I: A JIT Bug](https://googleprojectzero.blogspot.com/2020/09/jitsploitation-one.html)
 {: .message }
 
 ## JIT Compiler
