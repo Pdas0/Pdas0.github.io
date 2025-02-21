@@ -20,7 +20,7 @@ JSC의 일반 JSObject는 JSCell 헤더와 **버터플라이** 및 인라인 프
 
 **버터플라이**는 객체의 프로퍼티와 요소, 요소의 길이를 포함하는 스토리지 버퍼입니다.
 
-![Layout of a JSC Butterfly in memory]()
+![Layout of a JSC Butterfly in memory](https://raw.githubusercontent.com/Pdas0/Pdas0.github.io/refs/heads/main/_posts/JIT_BUG/2.png)
 
 JSArrayBuffers와 같은 객체는 JSObject 레이아웃에 추가 멤버를 더합니다.
 
@@ -37,7 +37,7 @@ JSArrayBuffers와 같은 객체는 JSObject 레이아웃에 추가 멤버를 더
 
 아래 이미지는 64비트 아키텍처에서 일반 JSObject의 인메모리 레이아웃을 정리한 것입니다.
 
-![Layout of a JSC JSObject in memory]()
+![Layout of a JSC JSObject in memory](https://raw.githubusercontent.com/Pdas0/Pdas0.github.io/refs/heads/main/_posts/JIT_BUG/3.png)
 
 객체에 대해 수행되는 대부분의 작업은 객체의 구조를 보고 객체로 수행할 작업을 결정해야 합니다.
 
